@@ -32,6 +32,8 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 assert args.optimizer_steps % args.truncated_bptt_step == 0
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
@@ -54,11 +56,11 @@ def main():
     # to keep track of the meta updates.
     meta_model = Model()
     if args.cuda:
-        meta_model.cuda()
+        meta_model.to(device)
 
     meta_optimizer = FastMetaOptimizer(MetaModel(meta_model), args.num_layers, args.hidden_size)
     if args.cuda:
-        meta_optimizer.cuda()
+        meta_optimizer.to(device)
 
     optimizer = optim.Adam(meta_optimizer.parameters(), lr=1e-3)
 
@@ -71,11 +73,11 @@ def main():
             # Sample a new model
             model = Model()
             if args.cuda:
-                model.cuda()
+                model.to(device)
 
             x, y = next(train_iter)
             if args.cuda:
-                x, y = x.cuda(), y.cuda()
+                x, y = x.to(device), y.to(device)
             x, y = Variable(x), Variable(y)
 
             # Compute initial loss of the model
@@ -90,11 +92,11 @@ def main():
                 loss_sum = 0
                 prev_loss = torch.zeros(1)
                 if args.cuda:
-                    prev_loss = prev_loss.cuda()
+                    prev_loss = prev_loss.to(device)
                 for j in range(args.truncated_bptt_step):
                     x, y = next(train_iter)
                     if args.cuda:
-                        x, y = x.cuda(), y.cuda()
+                        x, y = x.to(device), y.to(device)
                     x, y = Variable(x), Variable(y)
 
                     # First we need to compute the gradients of the model
@@ -124,8 +126,8 @@ def main():
 
             # Compute relative decrease in the loss function w.r.t initial
             # value
-            decrease_in_loss += loss.data[0] / initial_loss.data[0]
-            final_loss += loss.data[0]
+            decrease_in_loss += loss.item() / initial_loss.item()
+            final_loss += loss.item()
 
         print("Epoch: {}, final loss {}, average final/initial loss ratio: {}".format(epoch, final_loss / args.updates_per_epoch,
                                                                        decrease_in_loss / args.updates_per_epoch))
