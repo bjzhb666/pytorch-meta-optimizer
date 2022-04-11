@@ -11,9 +11,10 @@ from meta_optimizer import MetaModel, MetaOptimizer, FastMetaOptimizer
 from model import Model
 from torch.autograd import Variable
 from torchvision import datasets, transforms
+import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser(description='PyTorch REINFORCE example')
-parser.add_argument('--batch_size', type=int, default=32, metavar='N',
+parser.add_argument('--batch_size', type=int, default=512, metavar='N',
                     help='batch size (default: 32)')
 parser.add_argument('--optimizer_steps', type=int, default=100, metavar='N',
                     help='number of meta optimizer steps (default: 100)')
@@ -32,24 +33,25 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 assert args.optimizer_steps % args.truncated_bptt_step == 0
 
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+kwargs = {'num_workers': 4, 'pin_memory': True} if args.cuda else {}
+
 train_loader = torch.utils.data.DataLoader(
     datasets.MNIST('../data', train=True, download=True,
                    transform=transforms.Compose([
                        transforms.ToTensor(),
                        transforms.Normalize((0.1307,), (0.3081,))
                    ])),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
+    batch_size=args.batch_size, shuffle=True, drop_last=False, **kwargs)
 test_loader = torch.utils.data.DataLoader(
     datasets.MNIST('../data', train=False, transform=transforms.Compose([
                        transforms.ToTensor(),
                        transforms.Normalize((0.1307,), (0.3081,))
                    ])),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
+    batch_size=args.batch_size, shuffle=True, drop_last=False, **kwargs)
 
 def main():
     # Create a meta optimizer that wraps a model into a meta model
@@ -64,10 +66,15 @@ def main():
 
     optimizer = optim.Adam(meta_optimizer.parameters(), lr=1e-3)
 
+    # 可视化
+    final_loss_list = []
+
+    args.max_epoch = 2 # debug
     for epoch in range(args.max_epoch):
         decrease_in_loss = 0.0
         final_loss = 0.0
         train_iter = iter(train_loader)
+
         for i in range(args.updates_per_epoch):
 
             # Sample a new model
@@ -79,6 +86,7 @@ def main():
             if args.cuda:
                 x, y = x.to(device), y.to(device)
             x, y = Variable(x), Variable(y)
+            # print('x.shape: ', x.shape) # x.shape:  torch.Size([32(batch_size), 1(RGB通道数), 28, 28])
 
             # Compute initial loss of the model
             f_x = model(x)
@@ -94,14 +102,21 @@ def main():
                 if args.cuda:
                     prev_loss = prev_loss.to(device)
                 for j in range(args.truncated_bptt_step):
-                    x, y = next(train_iter)
+                    try:
+                        x, y = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(train_loader)
+                        x, y = next(train_iter)
+
                     if args.cuda:
                         x, y = x.to(device), y.to(device)
                     x, y = Variable(x), Variable(y)
 
                     # First we need to compute the gradients of the model
                     f_x = model(x)
+                    # print(f_x.shape) # torch.Size([32, 10])
                     loss = F.nll_loss(f_x, y)
+                    # print(loss)
                     model.zero_grad()
                     loss.backward()
 
@@ -121,16 +136,22 @@ def main():
                 meta_optimizer.zero_grad()
                 loss_sum.backward()
                 for param in meta_optimizer.parameters():
-                    param.grad.data.clamp_(-1, 1)
+                    param.grad.data.clamp_(-1, 1)  # clamp函数把值固定在-1到1之间，超过最大值和最小值直接按照最大值最小值处理
                 optimizer.step()
 
             # Compute relative decrease in the loss function w.r.t initial
             # value
+
             decrease_in_loss += loss.item() / initial_loss.item()
             final_loss += loss.item()
 
+        final_loss_list.append(final_loss / args.updates_per_epoch)
+        # print(len(final_loss_list))
         print("Epoch: {}, final loss {}, average final/initial loss ratio: {}".format(epoch, final_loss / args.updates_per_epoch,
                                                                        decrease_in_loss / args.updates_per_epoch))
+    final_loss_set = torch.tensor(final_loss_list, dtype=torch.float32)
+    plt.plot(torch.arange(0, args.max_epoch), final_loss_set)
+    plt.show()
 
 if __name__ == "__main__":
     main()
